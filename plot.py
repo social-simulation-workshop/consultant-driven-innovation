@@ -21,7 +21,7 @@ class PlotLinesHandler:
         self.title = "{}-{}".format(ylabel, xlabel)
         self.legend_list = list()
 
-        plt.figure(self.id, figsize=figure_size, dpi=80)
+        plt.figure(self.id, figsize=figure_size, dpi=160)
         # plt.title("{} - {}".format(ylabel_show, xlabel))
         plt.xlabel(xlabel)
         plt.ylabel(ylabel_show)
@@ -46,19 +46,20 @@ class PlotLinesHandler:
         else:
             plt.plot(np.arange(data.shape[-1]), data*100, linewidth=linewidth)
     
-    def plot_changes(self, data, line_width=1, color=""):
+    def plot_changes(self, inno_id_list, data, line_width=1, color=""):
         plt.figure(self.id)
 
-        last_inno = data[0]
-        for step in range(1, len(data)):
-            if data[step] != last_inno:
+        last_inno = inno_id_list[0]
+        for step in range(1, len(inno_id_list)):
+            if inno_id_list[step] != last_inno:
                 if color:
                     plt.axvline(x=step, ymin=0, ymax=1, linewidth=line_width, color=color)
                 else:
                     plt.axvline(x=step, ymin=0, ymax=1, linewidth=line_width)
-                last_inno = data[step]
-
-    
+                ax = plt.gca()
+                ax.text(step+1, data[step]*100-5, "inv "+str(inno_id_list[step]),
+                        ha="center", va="center", fontsize=10)
+                last_inno = inno_id_list[step]
 
     def save_fig(self, title_param=""):
         if not os.path.exists(self.output_dir):
@@ -67,6 +68,7 @@ class PlotLinesHandler:
         plt.figure(self.id)
         fn = "_".join([self.title, title_param]) + ".png"
         
+        plt.legend([title_param.split("_")[-1]])
         plt.subplots_adjust(left=0.05, bottom=0.15, right=0.95, top=0.85)
         plt.savefig(os.path.join(self.output_dir, fn))
         print("fig save to {}".format(os.path.join(self.output_dir, fn)))

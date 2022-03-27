@@ -25,14 +25,12 @@ class Consultant:
         
         self.inno = inno_init
         self.quality = truncated_normal()
-
         self.r_last = 0
         self.r_cur = 0
         self.a_h_last = 0
 
-        self.o_avg_list = [list()]
-
         self.clients = []
+        self.o_avg_list = []
 
 
     def receive_return(self, val_return: float):
@@ -85,7 +83,7 @@ class Market:
         self.con_adp_rate = list()
         self.con_most_inno = list()
 
-        ## initial matches
+        # initial matches
         for firm in self.firms:
             selected_con = self.select_con_from_inno(inno_id=firm.inno)
             firm.consultant = selected_con
@@ -110,19 +108,23 @@ class Market:
         # 2: firms have an innovation to demand
         # 3: a firm select a consultant
         
-        # 4: the firm recieves an outcome
+        # 5: the firm recieves an outcome
         for firm in self.firms:
             firm_outcome = self.args.alpha * self.inno_V[firm.inno] + \
                            self.args.beta * firm.consultant.quality + \
                            (1-self.args.alpha-self.args.beta) * truncated_normal()
             firm.receive_outcome(firm_outcome)
             
-        # 5: the consultant recieves a return
+        # 4: the consultant recieves a return
         for con in self.cons:
             con_return = self.args.eta * len(con.clients) * \
                          (self.inno_to_firm_n[con.inno]/len(self.inno_to_con[con.inno]["con"]))
             con.receive_return(con_return)
-            con.o_avg_list.append([firm.o_cur for firm in con.clients])
+            if con.clients:
+                con.o_avg_list.append([firm.o_cur for firm in con.clients])
+                if len(con.o_avg_list) > self.args.window:
+                    del con.o_avg_list[0]
+                assert len(con.o_avg_list) <= self.args.window
         
         # 6: consultants decide whether to make a change
         r_cur_arr = np.array([con.r_cur for con in self.cons])
@@ -176,24 +178,25 @@ class Market:
                     con.clients = []
             
             else:
-                # update o_avg
-                if len(con.o_avg_list) > self.args.window:
-                    del con.o_avg_list[0]
-                
                 all_o = []
                 for l in con.o_avg_list:
                     all_o += l
-                o_avg = sum(all_o) / len(all_o)
+                o_avg = sum(all_o) / len(all_o) if all_o else 0
                 self.inno_to_con[con.inno]["prob_w"][con_index] = o_avg + self.args.c
             
-            # update firm data
+            # update consultant data
             con.a_h_last = aspi_history
             con.r_last = con.r_cur
             con.r_cur = 0
 
         # 7: firms decide whether to make a change
         o_cur_arr = np.array([firm.o_cur for firm in self.firms])
-        best_firm_idx = np.argmax(o_cur_arr)
+        best_inno_sort = [self.firms[firm_idx].inno for firm_idx in np.argsort(o_cur_arr)[::-1]]
+        tmp_idx = 0
+        while len(self.inno_to_con[best_inno_sort[tmp_idx]]["con"]) == 0:
+            tmp_idx += 1
+        best_firm_inno = best_inno_sort[tmp_idx]
+
         sum_o_cur = np.sum(o_cur_arr)
         inno_pool_con = self.get_inno_pool()
 
@@ -206,7 +209,7 @@ class Market:
             if draw(prob_change):
                 firm_ori_inno = firm.inno
                 if draw(self.args.p_mimic_f):
-                    firm.inno = self.firms[best_firm_idx].inno
+                    firm.inno = best_firm_inno
                 else:
                     firm.inno = np.random.choice(inno_pool_con)
                 
@@ -254,18 +257,18 @@ if __name__ == "__main__":
     args_config = ArgsConfig()
     args = args_config.get_args()
     plh_firm = PlotLinesHandler(xlabel="Iterations", ylabel="Adoption", ylabel_show="% Adoption",
-                                x_lim=args.n_periods+15, y_lim=85)
+                                x_lim=args.n_periods+15, y_lim=95)
     plh_con = PlotLinesHandler(xlabel="Iterations", ylabel="Adoption", ylabel_show="% Adoption",
-                               x_lim=args.n_periods+15, y_lim=85)
+                               x_lim=args.n_periods+15, y_lim=95)
 
     m = Market(args)
     m.simulate()
 
     plh_firm.plot_line(np.array(m.firm_adp_rate), color="black")
-    plh_firm.plot_changes(m.firm_most_inno, color="black")
-    plh_firm.save_fig(title_param="firm")
+    plh_firm.plot_changes(m.firm_most_inno, m.firm_adp_rate, color="black")
+    plh_firm.save_fig(title_param="rndSeed_{}_firm".format(args.rnd_seed))
 
     plh_con.plot_line(np.array(m.con_adp_rate), color="black")
-    plh_con.plot_changes(m.con_most_inno, color="black")
-    plh_con.save_fig(title_param="con")
+    plh_con.plot_changes(m.con_most_inno, m.con_adp_rate, color="black")
+    plh_con.save_fig(title_param="rndSeed_{}_con".format(args.rnd_seed))
 

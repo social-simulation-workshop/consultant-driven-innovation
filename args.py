@@ -49,7 +49,7 @@ class ArgsConfig:
             help="the # of innovations, numbered from {0, 1, 2, ..., n_innovation-1}.")
         parser.add_argument("--n_periods", type=int, default=300,
             help="the # of periods.")
-        parser.add_argument("--rnd_seed", type=int, default=1025,
+        parser.add_argument("--rnd_seed", type=int, default=7775,
             help="random seed.")
 
         self.parser = parser
