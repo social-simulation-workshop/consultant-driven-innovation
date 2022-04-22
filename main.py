@@ -1,12 +1,14 @@
 import argparse
+import csv
 import itertools
-import matplotlib.pyplot as plt
+import multiprocessing
 import numpy as np
 import os
-from scipy.optimize import curve_fit
+import pandas as pd
 
 from args import ArgsConfig
 from plot import PlotLinesHandler
+from plot_scatter import plot_scatter_pop, plot_scatter_turn
 
 
 def truncated_normal() -> float:
@@ -265,6 +267,22 @@ class Market:
                 print("step {:3d} | firm: {:.4f}; most_inno: {:2d} | con: {:.4f}; most_inno: {:2d}".format(step,
                     self.firm_adp_rate[-1], self.firm_most_inno[-1], self.con_adp_rate[-1], self.con_most_inno[-1]))
 
+def simulate_trails(args, alpha, beta, rnd_seed, log_data, fix_alpha):
+    args.alpha = alpha
+    args.beta = beta
+    turn, pop = [], []
+    for trail_idx in range(args.n_trails):
+        args.rnd_seed = rnd_seed + trail_idx
+        m = Market(args, verbose=False)
+        m.simulate()
+        turn.append(m.get_firm_turnover())
+        pop.append(m.get_firm_popularity()*100)
+        print("alpha, beta: ({:.2f}, {:.2f}) | trail {}/{} | turn: {:3d} pop: {:.2f}".format( \
+            args.alpha, args.beta, trail_idx+1, args.n_trails, turn[-1], pop[-1]))
+    log_data.append([args.alpha, args.beta, 
+                     np.mean(turn), np.std(turn),
+                     np.mean(pop), np.std(pop), (1 if fix_alpha else 0)])
+    
 
 
 
@@ -291,70 +309,40 @@ if __name__ == "__main__":
 
     # figure 3, 4
     RANDOM_SEED = args.rnd_seed
-    alpha_turn = [[], []]
-    alpha_pop = [[], []]
-    for alpha in range(0, 100, 10):
-        args.alpha = alpha / 100
-        args.beta = 0
-        
-        turn, pop = [], []
-        for trail_idx in range(args.n_trails):
-            args.rnd_seed = RANDOM_SEED + trail_idx
-            m = Market(args, verbose=False)
-            m.simulate()
-            turn.append(m.get_firm_turnover())
-            pop.append(m.get_firm_popularity()*100)
-            print("alpha, beta: ({:.2f}, {:.2f}) | trail {}/{} | turn: {:3d} pop: {:.2f}".format( \
-                args.alpha, args.beta, trail_idx+1, args.n_trails, turn[-1], pop[-1]))
-        alpha_turn[0].insert(0, np.mean(turn))
-        alpha_turn[1].insert(0, np.std(turn))
-        alpha_pop[0].insert(0, np.mean(pop))
-        alpha_pop[1].insert(0, np.std(pop))
-    
-    beta_turn = [[], []]
-    beta_pop = [[], []]
-    for beta in range(0, 100, 10):
-        args.alpha = 0
-        args.beta = beta / 100
-        
-        turn, pop = [], []
-        for trail_idx in range(args.n_trails):
-            args.rnd_seed = RANDOM_SEED + trail_idx
-            m = Market(args, verbose=False)
-            m.simulate()
-            turn.append(m.get_firm_turnover())
-            pop.append(m.get_firm_popularity()*100)
-            print("alpha, beta: ({:.2f}, {:.2f}) | trail {}/{} | turn: {:3d} pop: {:.2f}".format( \
-                args.alpha, args.beta, trail_idx+1, args.n_trails, turn[-1], pop[-1]))
-        beta_turn[0].insert(0, np.mean(turn))
-        beta_turn[1].insert(0, np.std(turn))
-        beta_pop[0].insert(0, np.mean(pop))
-        beta_pop[1].insert(0, np.std(pop))
-    
-    plt.figure(figsize=(17, 12), dpi=160)
-    plt.xlabel("100-Noise")
-    plt.ylabel("Popularity of Leading Innovations among Firms")
-    ax = plt.gca()
-    ax.set_xlim([0, 100])
-    plt.xticks(np.arange(0, 101, step=20))
-    ax.set_ylim([35, 85])
-    plt.yticks(np.arange(35, 86, step=5))
-    plt.errorbar(x=np.arange(0, 100, 10), y=alpha_pop[0], yerr=alpha_pop[1], 
-                 fmt="ks", ecolor="0.8")
-    plt.errorbar(x=np.arange(0, 100, 10), y=beta_pop[0], yerr=beta_pop[1], 
-                 fmt="kD", ecolor="0.5")
-    
-    def poly2(x, a, b, c):
-        return a*x**2 + b*x + c
-    (a, b, c), _ = curve_fit(poly2, np.arange(0, 100, 10), np.array(alpha_pop[0]))
-    plt.plot(np.arange(0, 100, 1), poly2(np.arange(0, 100, 1), a, b, c), "--", color="0.8", lw=2)
-    (a, b, c), _ = curve_fit(poly2, np.arange(0, 100, 10), np.array(beta_pop[0]))
-    plt.plot(np.arange(0, 100, 1), poly2(np.arange(0, 100, 1), a, b, c), "--", color="0.5", lw=2)
+    manager = multiprocessing.Manager()
+    log_data = manager.list()
 
-    output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "imgfiles")
-    fn = "Popularity-Effect_rndSeed_{}_trail_{}_firm.png".format(args.rnd_seed, args.n_trails)
-    plt.savefig(os.path.join(output_dir, fn))
-    print("fig save to {}".format(os.path.join(output_dir, fn)))
+    args_list = list()
+    for val in range(0, 101, 10):
+        args_list.append([args, val/100, 0, RANDOM_SEED, log_data, False])
+        args_list.append([args, 0, val/100, RANDOM_SEED, log_data, True])
+
+    n_cpus = multiprocessing.cpu_count()
+    print("cpu count: {}".format(n_cpus))
+    pool = multiprocessing.Pool(n_cpus+2)
+    pool.starmap(simulate_trails, args_list)
+        
+    # write to csv
+    out_fn = "alpha_beta_rndSeed_{}_trail_{}_firm.csv".format(RANDOM_SEED, args.n_trails)
+    out_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), out_fn)
+    out_file = open(out_file_path, "w", newline="")
+    out_writer = csv.writer(out_file)
+    out_writer.writerow(["alpha", "beta", "turn_mean", "turn_std", "pop_mean", "pop_std", "fix_alpha"])
+    for row in log_data:
+        out_writer.writerow(row)
+    out_file.close()
+    
+    # plot
+    file_df = pd.read_csv(out_file_path)
+    alpha_df = file_df[file_df.fix_alpha == 0]
+    alpha_df.sort_values(by=["alpha"], ascending=[True],
+                         ignore_index=True, inplace=True)
+    beta_df = file_df[file_df.fix_alpha == 1]
+    beta_df.sort_values(by=["beta"], ascending=[True],
+                        ignore_index=True, inplace=True)
+    plot_scatter_pop(alpha_df, beta_df, RANDOM_SEED, args.n_trails)
+    plot_scatter_turn(alpha_df, beta_df, RANDOM_SEED, args.n_trails)
+    
     
         
         
