@@ -1,6 +1,9 @@
 import argparse
 import itertools
+import matplotlib.pyplot as plt
 import numpy as np
+import os
+from scipy.optimize import curve_fit
 
 from args import ArgsConfig
 from plot import PlotLinesHandler
@@ -31,6 +34,11 @@ class Consultant:
 
         self.clients = []
         self.o_avg_list = []
+    
+
+    def __str__(self) -> str:
+        return "Con {} | inno: {} return: {} | clients: {}".format( \
+            self.id, self.inno, self.r_cur, [f.id for f in self.clients])
 
 
     def receive_return(self, val_return: float):
@@ -51,15 +59,21 @@ class Firm:
         self.consultant = None
     
 
+    def __str__(self) -> str:
+        return "Firm {} | inno: {} outcome: {} | con: {}".format( \
+            self.id, self.inno, self.o_cur, self.consultant.id)
+    
+
     def receive_outcome(self, val_outcome: float):
         self.o_cur += val_outcome
 
 
 class Market:
 
-    def __init__(self, args: argparse.ArgumentParser) -> None:
+    def __init__(self, args: argparse.ArgumentParser, verbose=True) -> None:
         np.random.seed(args.rnd_seed)
         self.args = args
+        self.verbose = verbose
 
         # consultant
         self.cons = [Consultant(inno) for inno in np.random.randint(low=0, high=self.args.n_innovation, size=self.args.n_consultant)]
@@ -82,15 +96,17 @@ class Market:
         self.firm_most_inno = list()
         self.con_adp_rate = list()
         self.con_most_inno = list()
+        self.turnover = 0
+        self.popularity = None
 
         # initial matches
         for firm in self.firms:
-            selected_con = self.select_con_from_inno(inno_id=firm.inno)
+            selected_con = self.select_con_by_inno(inno_id=firm.inno)
             firm.consultant = selected_con
             selected_con.clients.append(firm)
         
     
-    def select_con_from_inno(self, inno_id) -> Consultant:
+    def select_con_by_inno(self, inno_id) -> Consultant:
         prob = np.array(self.inno_to_con[inno_id]["prob_w"])
         prob = prob / np.sum(prob)
         prob[np.argmax(prob)] += 1 - np.sum(prob) # adjust it to make its sum be exactly 1.0
@@ -145,37 +161,31 @@ class Market:
                 assert con_index < len(self.inno_to_con[con.inno]["con"])
 
             if draw(prob_change):
-                con_ori_inno = con.inno
+                # remove from the original inno
+                self.inno_to_con[con.inno]["con"].pop(con_index)
+                self.inno_to_con[con.inno]["prob_w"].pop(con_index)
+
                 if draw(self.args.p_mimic_c):
                     con.inno = best_con_inno
                 else:
-                    con.inno = np.random.choice(np.arange(self.args.n_innovation))
-                
-                if con_ori_inno != con.inno:
-                    # remove from the original inno
-                    self.inno_to_con[con_ori_inno]["con"].pop(con_index)
-                    self.inno_to_con[con_ori_inno]["prob_w"].pop(con_index)
+                    con.inno = np.random.randint(self.args.n_innovation)
 
-                    # add to new inno
-                    self.inno_to_con[con.inno]["con"].append(con)
-                    self.inno_to_con[con.inno]["prob_w"].append(0 + self.args.c)
+                # add to new inno
+                self.inno_to_con[con.inno]["con"].append(con)
+                self.inno_to_con[con.inno]["prob_w"].append(0 + self.args.c)
 
-                    con.o_avg_list = []
+                con.o_avg_list = []
+                con_ori_clients = con.clients.copy()
+                con.clients = []
 
-                    # its clients reselect
-                    if self.inno_to_con[con_ori_inno]["con"]:
-                        for firm in con.clients:
-                            firm.consultant = self.select_con_from_inno(inno_id=con_ori_inno)
-                            firm.consultant.clients.append(firm)
-                    else:
-                        for firm in con.clients:
-                            self.inno_to_firm_n[firm.inno] -= 1
-                            firm.inno = np.random.choice(self.get_inno_pool())
-                            firm.consultant = self.select_con_from_inno(inno_id=firm.inno)
-                            firm.consultant.clients.append(firm)
-                            self.inno_to_firm_n[firm.inno] += 1
-                    
-                    con.clients = []
+                # its clients reselect other consultants with same inno
+                for firm in con_ori_clients:
+                    if not self.inno_to_con[firm.inno]["con"]:
+                        self.inno_to_firm_n[firm.inno] -= 1
+                        firm.inno = np.random.choice(self.get_inno_pool())
+                        self.inno_to_firm_n[firm.inno] += 1
+                    firm.consultant = self.select_con_by_inno(inno_id=firm.inno)
+                    firm.consultant.clients.append(firm)
             
             else:
                 all_o = []
@@ -190,14 +200,12 @@ class Market:
             con.r_cur = 0
 
         # 7: firms decide whether to make a change
-        o_cur_arr = np.array([firm.o_cur for firm in self.firms])
-        best_inno_sort = [self.firms[firm_idx].inno for firm_idx in np.argsort(o_cur_arr)[::-1]]
-        tmp_idx = 0
-        while len(self.inno_to_con[best_inno_sort[tmp_idx]]["con"]) == 0:
-            tmp_idx += 1
-        best_firm_inno = best_inno_sort[tmp_idx]
-
-        sum_o_cur = np.sum(o_cur_arr)
+        best_firm_sort = sorted(self.firms, key=lambda f: f.o_cur, reverse=True)
+        while len(self.inno_to_con[best_firm_sort[0].inno]["con"]) == 0:
+            del best_firm_sort[0]
+        best_firm_inno = best_firm_sort[0].inno
+        best_firm_con = best_firm_sort[0].consultant
+        sum_o_cur = np.sum([firm.o_cur for firm in self.firms])
         inno_pool_con = self.get_inno_pool()
 
         for firm in self.firms:
@@ -207,30 +215,35 @@ class Market:
             prob_change = 1 / (1 + np.exp(self.args.a_f + self.args.b_f*(firm.o_cur - aspi_total)))
 
             if draw(prob_change):
-                firm_ori_inno = firm.inno
+                # consultant lose a client
+                for cli_idx, cli in enumerate(firm.consultant.clients):
+                    if cli.id == firm.id:
+                        firm.consultant.clients.pop(cli_idx)
+                self.inno_to_firm_n[firm.inno] -= 1
+
                 if draw(self.args.p_mimic_f):
                     firm.inno = best_firm_inno
+                    firm.consultant = best_firm_con
                 else:
                     firm.inno = np.random.choice(inno_pool_con)
                 
-                if firm_ori_inno != firm.inno:
-                    # consultant lose a client
-                    client_index = 0
-                    while firm.consultant.clients[client_index].id != firm.id:
-                        client_index += 1
-                    firm.consultant.clients.pop(client_index)
-
                     # firm select a new consultant supplying firm.inno
-                    firm.consultant = self.select_con_from_inno(inno_id=firm.inno)
-                    firm.consultant.clients.append(firm)
-
-                    self.inno_to_firm_n[firm_ori_inno] -= 1
-                    self.inno_to_firm_n[firm.inno] += 1
+                    firm.consultant = self.select_con_by_inno(inno_id=firm.inno)
+                firm.consultant.clients.append(firm)
+                self.inno_to_firm_n[firm.inno] += 1
             
             # update firm data
             firm.a_h_last = aspi_history
             firm.o_last = firm.o_cur
             firm.o_cur = 0
+    
+
+    def get_firm_turnover(self) -> int:
+        return self.turnover
+    
+    
+    def get_firm_popularity(self) -> float:
+        return sum(self.firm_adp_rate) / len(self.firm_adp_rate)
     
     
     def simulate(self):
@@ -241,14 +254,16 @@ class Market:
             assert np.sum(firm_len) == self.args.n_innovation
             self.firm_adp_rate.append(np.max(firm_len)/self.args.n_innovation)
             self.firm_most_inno.append(np.argmax(firm_len))
+            self.turnover += 1 if len(self.firm_most_inno) == 1 or self.firm_most_inno[-1] != self.firm_most_inno[-2] else 0
 
             con_len = np.array([len(d["con"]) for d in self.inno_to_con])
             assert np.sum(con_len) == self.args.n_innovation
             self.con_adp_rate.append(np.max(con_len)/self.args.n_innovation)
             self.con_most_inno.append(np.argmax(con_len))
 
-            print("step {:3d} | firm: {:.4f}; most_inno: {:2d} | con: {:.4f}; most_inno: {:2d}".format(step,
-                self.firm_adp_rate[-1], self.firm_most_inno[-1], self.con_adp_rate[-1], self.con_most_inno[-1]))
+            if self.verbose:
+                print("step {:3d} | firm: {:.4f}; most_inno: {:2d} | con: {:.4f}; most_inno: {:2d}".format(step,
+                    self.firm_adp_rate[-1], self.firm_most_inno[-1], self.con_adp_rate[-1], self.con_most_inno[-1]))
 
 
 
@@ -256,19 +271,92 @@ class Market:
 if __name__ == "__main__":
     args_config = ArgsConfig()
     args = args_config.get_args()
-    plh_firm = PlotLinesHandler(xlabel="Iterations", ylabel="Adoption", ylabel_show="% Adoption",
-                                x_lim=args.n_periods+15, y_lim=95)
-    plh_con = PlotLinesHandler(xlabel="Iterations", ylabel="Adoption", ylabel_show="% Adoption",
-                               x_lim=args.n_periods+15, y_lim=95)
 
-    m = Market(args)
-    m.simulate()
+    # # figure 2 single trial
+    # m = Market(args)
+    # m.simulate()
 
-    plh_firm.plot_line(np.array(m.firm_adp_rate), color="black")
-    plh_firm.plot_changes(m.firm_most_inno, m.firm_adp_rate, color="black")
-    plh_firm.save_fig(title_param="rndSeed_{}_firm".format(args.rnd_seed))
+    # plh_firm = PlotLinesHandler(xlabel="Iterations", ylabel="Adoption", ylabel_show="% Adoption",
+    #                             x_lim=args.n_periods+15, y_lim=95)
+    # plh_con = PlotLinesHandler(xlabel="Iterations", ylabel="Adoption", ylabel_show="% Adoption",
+    #                            x_lim=args.n_periods+15, y_lim=95)
+    
+    # plh_firm.plot_line(np.array(m.firm_adp_rate), color="black")
+    # plh_firm.plot_changes(m.firm_most_inno, m.firm_adp_rate, color="black")
+    # plh_firm.save_fig(title_param="rndSeed_{}_firm".format(args.rnd_seed))
 
-    plh_con.plot_line(np.array(m.con_adp_rate), color="black")
-    plh_con.plot_changes(m.con_most_inno, m.con_adp_rate, color="black")
-    plh_con.save_fig(title_param="rndSeed_{}_con".format(args.rnd_seed))
+    # plh_con.plot_line(np.array(m.con_adp_rate), color="black")
+    # plh_con.plot_changes(m.con_most_inno, m.con_adp_rate, color="black")
+    # plh_con.save_fig(title_param="rndSeed_{}_con".format(args.rnd_seed))
+
+    # figure 3, 4
+    RANDOM_SEED = args.rnd_seed
+    alpha_turn = [[], []]
+    alpha_pop = [[], []]
+    for alpha in range(0, 100, 10):
+        args.alpha = alpha / 100
+        args.beta = 0
+        
+        turn, pop = [], []
+        for trail_idx in range(args.n_trails):
+            args.rnd_seed = RANDOM_SEED + trail_idx
+            m = Market(args, verbose=False)
+            m.simulate()
+            turn.append(m.get_firm_turnover())
+            pop.append(m.get_firm_popularity()*100)
+            print("alpha, beta: ({:.2f}, {:.2f}) | trail {}/{} | turn: {:3d} pop: {:.2f}".format( \
+                args.alpha, args.beta, trail_idx+1, args.n_trails, turn[-1], pop[-1]))
+        alpha_turn[0].insert(0, np.mean(turn))
+        alpha_turn[1].insert(0, np.std(turn))
+        alpha_pop[0].insert(0, np.mean(pop))
+        alpha_pop[1].insert(0, np.std(pop))
+    
+    beta_turn = [[], []]
+    beta_pop = [[], []]
+    for beta in range(0, 100, 10):
+        args.alpha = 0
+        args.beta = beta / 100
+        
+        turn, pop = [], []
+        for trail_idx in range(args.n_trails):
+            args.rnd_seed = RANDOM_SEED + trail_idx
+            m = Market(args, verbose=False)
+            m.simulate()
+            turn.append(m.get_firm_turnover())
+            pop.append(m.get_firm_popularity()*100)
+            print("alpha, beta: ({:.2f}, {:.2f}) | trail {}/{} | turn: {:3d} pop: {:.2f}".format( \
+                args.alpha, args.beta, trail_idx+1, args.n_trails, turn[-1], pop[-1]))
+        beta_turn[0].insert(0, np.mean(turn))
+        beta_turn[1].insert(0, np.std(turn))
+        beta_pop[0].insert(0, np.mean(pop))
+        beta_pop[1].insert(0, np.std(pop))
+    
+    plt.figure(figsize=(17, 12), dpi=160)
+    plt.xlabel("100-Noise")
+    plt.ylabel("Popularity of Leading Innovations among Firms")
+    ax = plt.gca()
+    ax.set_xlim([0, 100])
+    plt.xticks(np.arange(0, 101, step=20))
+    ax.set_ylim([35, 85])
+    plt.yticks(np.arange(35, 86, step=5))
+    plt.errorbar(x=np.arange(0, 100, 10), y=alpha_pop[0], yerr=alpha_pop[1], 
+                 fmt="ks", ecolor="0.8")
+    plt.errorbar(x=np.arange(0, 100, 10), y=beta_pop[0], yerr=beta_pop[1], 
+                 fmt="kD", ecolor="0.5")
+    
+    def poly2(x, a, b, c):
+        return a*x**2 + b*x + c
+    (a, b, c), _ = curve_fit(poly2, np.arange(0, 100, 10), np.array(alpha_pop[0]))
+    plt.plot(np.arange(0, 100, 1), poly2(np.arange(0, 100, 1), a, b, c), "--", color="0.8", lw=2)
+    (a, b, c), _ = curve_fit(poly2, np.arange(0, 100, 10), np.array(beta_pop[0]))
+    plt.plot(np.arange(0, 100, 1), poly2(np.arange(0, 100, 1), a, b, c), "--", color="0.5", lw=2)
+
+    output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "imgfiles")
+    fn = "Popularity-Effect_rndSeed_{}_trail_{}_firm.png".format(args.rnd_seed, args.n_trails)
+    plt.savefig(os.path.join(output_dir, fn))
+    print("fig save to {}".format(os.path.join(output_dir, fn)))
+    
+        
+        
+        
 
